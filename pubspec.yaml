@@ -1,0 +1,64 @@
+name: monoc_locsaver
+description: A monochrome location saver app.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_map: ^6.0.0
+  latlong2: ^0.9.0
+  geolocator: ^10.0.0
+  sqflite: ^2.3.0
+  path: ^1.8.3
+  path_provider: ^2.1.1
+  flutter_svg: ^2.0.9
+  intl: 0.20.2
+  permission_handler: ^11.0.0
+  image_picker: ^1.0.4
+  shared_preferences: ^2.2.0
+  flutter_background_service: ^5.0.0
+  flutter_local_notifications: ^17.0.0
+  flutter_localizations:
+    sdk: flutter
+  photo_manager: 3.2.0
+  http: ^1.1.0
+
+  # Nearby Connections（迷子探し機能用 - Bluetooth + WiFi Direct）
+  nearby_connections: ^4.0.1
+  flutter_compass: ^0.8.0
+
+  # 省電力バックグラウンド位置情報取得のためのパッケージ
+  # 完全無料かつGitHub Actionsでビルドしやすい構成にするため、
+  # 今回は簡易的にgeolocatorのバックグラウンド機能を利用する想定ですが、
+  # 本格的な省電力バックグラウンド追跡には flutter_background_service 等の組み合わせが必要です。
+  # ここではシンプルさを優先し、フォアグラウンド+簡易バックグラウンドとします。
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/app_icon.png"
+  adaptive_icon_background: "#000000"
+  min_sdk_android: 21
+  remove_alpha_ios: true
+
+flutter:
+  uses-material-design: true
+  assets:
+    - AppPartsIcons/
+    - Font/
+    - assets/
+
+  fonts:
+    - family: DotGothic16
+      fonts:
+        - asset: Font/DotGothic16-Regular.ttf

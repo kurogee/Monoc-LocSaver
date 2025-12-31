@@ -1,0 +1,87 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+
+# Web related
+lib/generated_plugin_registrant.dart
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Flutter Project files (created by flutter create, but we want to ignore them if we are generating them on CI)
+# However, usually we DO commit the platform folders (android, ios, web, etc.) if we have custom native code.
+# In this specific project, we are generating the project structure in CI, so we might not have these folders locally yet.
+# But if the user runs flutter create locally, these will appear.
+# Standard practice is to commit android/ ios/ etc.
+# Since the user is working locally without Flutter installed, they might not generate these.
+# But if they do, we should probably track them if they contain custom changes.
+# Given the user's request "I don't have Android Studio locally", they probably won't generate platform folders.
+# But if they do, standard gitignore applies.
+
+# Android
+**/android/app/google-services.json
+**/android/gradlewrapper/
+**/android/.gradle
+**/android/captures/
+**/android/gradlew
+**/android/gradlew.bat
+**/android/local.properties
+**/android/key.properties
+**/android/*.jks
+
+# iOS
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/app.flx
+**/ios/Flutter/app.zip
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+
+# Windows
+**/windows/flutter/ephemeral/
+
+# Linux
+**/linux/flutter/ephemeral/
+
+# MacOS
+**/macos/Flutter/ephemeral/
+
+memo.txt

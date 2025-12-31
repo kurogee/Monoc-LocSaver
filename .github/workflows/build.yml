@@ -1,0 +1,103 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.0'
+          channel: 'stable'
+
+      - name: Install dependencies for icon generation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick librsvg2-bin
+
+      - name: Generate app icon from SVG
+        run: |
+          # SVGからPNGを生成（1024x1024）
+          rsvg-convert -w 1024 -h 1024 assets/app_icon.svg -o assets/app_icon.png || \
+          convert -size 1024x1024 xc:black -fill white -stroke white -strokewidth 20 \
+            -draw "circle 512,512 512,100" \
+            -fill black \
+            -draw "circle 512,512 512,200" \
+            -fill white \
+            -draw "polygon 512,200 380,600 644,600" \
+            -draw "circle 512,380 512,300" \
+            assets/app_icon.png
+          
+          # アイコンが生成されたか確認
+          ls -la assets/
+
+      - name: Create Flutter Project Structure
+        run: |
+          # 現在のディレクトリの内容を一時退避
+          mkdir temp_src
+          mv * temp_src/ || true
+          # .gitなどは移動されないので注意が必要だが、checkout直後なので
+          # 隠しファイルも含めて移動する
+          mv .github temp_src/
+          
+          # 新しいFlutterプロジェクトを作成
+          flutter create . --project-name=monoc_locsaver --org=com.example.monoclocsaver
+          
+          # 退避していたファイルを書き戻す（上書き）
+          cp -r temp_src/* .
+          rm -rf temp_src
+          
+          # 依存関係の取得
+          flutter pub get
+
+          # AndroidManifest.xml をバックグラウンド対応版に上書き
+          cp App_Resources/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+
+          # KotlinバージョンとminSdkVersionを更新
+          # build.gradle (旧形式)
+          if [ -f android/build.gradle ]; then
+            sed -i 's/ext.kotlin_version = .*/ext.kotlin_version = "1.9.22"/' android/build.gradle
+          fi
+          
+          # settings.gradle (新形式 - plugins block)
+          if [ -f android/settings.gradle ]; then
+             sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.22"/' android/settings.gradle
+          fi
+
+          # minSdkVersionを21に更新
+          if [ -f android/app/build.gradle ]; then
+            sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/' android/app/build.gradle
+            # compileSdkVersionを34に設定（photo_manager互換性のため）
+            sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/' android/app/build.gradle
+            # targetSdkVersionも更新
+            sed -i 's/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 34/' android/app/build.gradle
+            # 既存のdependencies {}を置換してcore-ktxを追加（一行形式対応）
+            sed -i 's/dependencies {}/dependencies { implementation "androidx.core:core-ktx:1.12.0" }/' android/app/build.gradle
+          fi
+
+          # 変更内容の確認（デバッグ用）
+          grep "kotlin_version" android/build.gradle || true
+          grep "minSdkVersion\|compileSdkVersion" android/app/build.gradle || true
+
+          # 依存関係の取得
+          flutter pub get
+
+      - name: Generate app icons
+        run: |
+          dart run flutter_launcher_icons
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
