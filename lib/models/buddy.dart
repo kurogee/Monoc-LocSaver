@@ -1,7 +1,7 @@
 /// 接続相手（バディ）の情報を保持するモデル
 class Buddy {
   final String id;
-  final String name;
+  String name;
   final String? deviceId;
   double? latitude;
   double? longitude;
