@@ -702,80 +702,112 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
           ),
           const SizedBox(height: 8),
           Expanded(
-    /// リストビュー（バディを分かりやすく表示）
-    Widget _buildBuddyListView() {
-      final buddies = _nearbyService.connectedBuddies;
-    
-      return Container(
-        margin: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  '接続中のバディ',
-                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                if (_uwbService.isSupported)
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: _useUwb ? Colors.cyan.withOpacity(0.2) : Colors.grey.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: _useUwb ? Colors.cyan : Colors.grey,
-                        width: 1,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final size = min(constraints.maxWidth, constraints.maxHeight) - 32;
+                return Center(
+                  child: SizedBox(
+                    width: size,
+                    height: size,
+                    child: Stack(
+                      alignment: Alignment.center,
                       children: [
-                        Icon(
-                          Icons.radar,
-                          color: _useUwb ? Colors.cyan : Colors.grey,
-                          size: 14,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          _useUwb ? 'UWB超高精度' : 'UWB利用可',
-                          style: TextStyle(
-                            color: _useUwb ? Colors.cyan : Colors.grey,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+                        // レーダー背景
+                        _buildRadarBackground(size),
+                        // バディマーカー
+                        ..._nearbyService.connectedBuddies.map((buddy) {
+                          return _buildBuddyMarker(buddy, size);
+                        }),
+                        // 中央の自分マーカー
+                        _buildSelfMarker(),
                       ],
                     ),
                   ),
-              ],
+                );
+              },
             ),
-            const SizedBox(height: 8),
-            // センサー信頼度表示
-            if (_useSensorFusion)
-              Container(
-                padding: const EdgeInsets.all(8),
-                margin: const EdgeInsets.only(bottom: 8),
-                decoration: BoxDecoration(
-                  color: Colors.grey[900],
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.white12),
+          ),
+          // バディリスト（簡易表示）
+          ..._nearbyService.connectedBuddies.map((buddy) => _buildBuddyInfoCard(buddy)),
+        ],
+      ),
+    );
+  }
+
+  /// リストビュー（バディを分かりやすく表示）
+  Widget _buildBuddyListView() {
+    final buddies = _nearbyService.connectedBuddies;
+  
+    return Container(
+      margin: const EdgeInsets.all(16),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                '接続中のバディ',
+                style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              if (_uwbService.isSupported)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _useUwb ? Colors.cyan.withOpacity(0.2) : Colors.grey.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: _useUwb ? Colors.cyan : Colors.grey,
+                      width: 1,
+                    ),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.radar,
+                        color: _useUwb ? Colors.cyan : Colors.grey,
+                        size: 14,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _useUwb ? 'UWB超高精度' : 'UWB利用可',
+                        style: TextStyle(
+                          color: _useUwb ? Colors.cyan : Colors.grey,
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                child: _buildReliabilityMeter(),
+            ],
+          ),
+          const SizedBox(height: 8),
+          // センサー信頼度表示
+          if (_useSensorFusion)
+            Container(
+              padding: const EdgeInsets.all(8),
+              margin: const EdgeInsets.only(bottom: 8),
+              decoration: BoxDecoration(
+                color: Colors.grey[900],
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.white12),
               ),
-            Expanded(
-              child: ListView.builder(
-                itemCount: buddies.length,
-                itemBuilder: (context, index) {
-                  final buddy = buddies[index];
-                  return _buildBuddyListCard(buddy);
-                },
-              ),
+              child: _buildReliabilityMeter(),
             ),
-          ],
-        ),
-      );
-    }
+          Expanded(
+            child: ListView.builder(
+              itemCount: buddies.length,
+              itemBuilder: (context, index) {
+                final buddy = buddies[index];
+                return _buildBuddyListCard(buddy);
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
     /// バディリストカード（分かりやすい表示）
     Widget _buildBuddyListCard(Buddy buddy) {
@@ -1009,38 +1041,6 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
         ),
       );
     }
-
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final size = min(constraints.maxWidth, constraints.maxHeight) - 32;
-                return Center(
-                  child: SizedBox(
-                    width: size,
-                    height: size,
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        // レーダー背景
-                        _buildRadarBackground(size),
-                        // バディマーカー
-                        ..._nearbyService.connectedBuddies.map((buddy) {
-                          return _buildBuddyMarker(buddy, size);
-                        }),
-                        // 中央の自分マーカー
-                        _buildSelfMarker(),
-                      ],
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          // バディリスト
-          ..._nearbyService.connectedBuddies.map((buddy) => _buildBuddyInfoCard(buddy)),
-        ],
-      ),
-    );
-  }
 
   /// レーダー背景
   Widget _buildRadarBackground(double size) {
