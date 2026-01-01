@@ -34,6 +34,12 @@
     <!-- カメラ -->
     <uses-permission android:name="android.permission.CAMERA" />
 
+        <!-- UWB（Ultra-Wideband）権限 - Android 12以上 -->
+        <uses-permission android:name="android.permission.UWB_RANGING" />
+    
+        <!-- UWB機能要求（必須ではなくオプション） -->
+        <uses-feature android:name="android.hardware.uwb" android:required="false" />
+
     <application
         android:label="monoc_locsaver"
         android:name="${applicationName}"

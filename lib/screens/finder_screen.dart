@@ -5,6 +5,7 @@ import 'package:flutter_compass/flutter_compass.dart';
 import 'package:monoc_locsaver/models/buddy.dart';
 import 'package:monoc_locsaver/services/nearby_service.dart';
 import 'package:monoc_locsaver/services/sensor_fusion_service.dart';
+import 'package:monoc_locsaver/services/uwb_service.dart';
 
 /// 迷子探し画面 - バディの位置と方向を表示
 class FinderScreen extends StatefulWidget {
@@ -17,12 +18,21 @@ class FinderScreen extends StatefulWidget {
 class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMixin {
   final NearbyService _nearbyService = NearbyService();
   final SensorFusionService _sensorFusion = SensorFusionService();
+  final UwbService _uwbService = UwbService();
   
   // コンパスのヘディング（デバイスの向き）
   double _heading = 0;
   double _smoothHeading = 0; // 平滑化されたヘディング
   StreamSubscription<CompassEvent>? _compassSubscription;
   bool _useSensorFusion = true; // センサーフュージョンを使用するか
+  bool _useUwb = false; // UWB超高精度モードを使用するか
+  
+  // 表示モード（リスト or レーダー）
+  bool _isListMode = true; // デフォルトはリストモード
+
+  // 表示スムージング用キャッシュ（カクつき防止）
+  final Map<String, double> _smoothedDistance = {};
+  final Map<String, double> _smoothedBearing = {};
   
   // カルマンフィルタ用パラメータ（より高精度な方位推定）
   double _kalmanGain = 0.1;
@@ -47,6 +57,7 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
     _initializeService();
     _setupCompass();
     _setupSensorFusion();
+      _setupUwb();
     _setupAnimation();
     _nameController.text = _nearbyService.myName;
   }
@@ -153,6 +164,22 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
     }
   }
 
+    void _setupUwb() async {
+      try {
+        await _uwbService.initialize();
+        _uwbService.addListener(_onServiceUpdate);
+        if (_uwbService.isSupported) {
+          setState(() {
+            _useUwb = true;
+          });
+          debugPrint('✅ UWB超高精度モードが利用可能です！');
+        }
+      } catch (e) {
+        debugPrint('UWB初期化エラー: $e');
+        _useUwb = false;
+      }
+    }
+
   void _setupAnimation() {
     _pulseController = AnimationController(
       duration: const Duration(milliseconds: 1500),
@@ -174,6 +201,8 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
     _pulseController.dispose();
     _nearbyService.removeListener(_onServiceUpdate);
     _sensorFusion.removeListener(_onServiceUpdate);
+      _uwbService.removeListener(_onServiceUpdate);
+      _uwbService.stopRanging();
     _nameController.dispose();
     super.dispose();
   }
@@ -299,6 +328,15 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
     return baseDistance + accuracyNote;
   }
 
+  /// 値を滑らかに遷移させる（カクつき防止）
+  double? _smoothValue(Map<String, double> cache, String key, double? newValue, {double alpha = 0.25}) {
+    if (newValue == null || newValue.isNaN || newValue.isInfinite) return cache[key];
+    final previous = cache[key];
+    final smoothed = previous == null ? newValue : (previous * (1 - alpha) + newValue * alpha);
+    cache[key] = smoothed;
+    return smoothed;
+  }
+
   /// 方角を文字に変換
   String _getDirectionText(double? bearing) {
     if (bearing == null) return '';
@@ -325,7 +363,46 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
           onPressed: () => Navigator.pop(context),
         ),
         actions: [
-          // 精度モード切り替え
+            // UWB超高精度モード表示
+            if (_uwbService.isSupported)
+              IconButton(
+                icon: Icon(
+                  Icons.radar,
+                  color: _useUwb ? Colors.cyan : Colors.grey,
+                ),
+                onPressed: () {
+                  setState(() {
+                    _useUwb = !_useUwb;
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(
+                        _useUwb 
+                          ? '✨ UWB超高精度モード有効 (±数cm)'
+                          : '通常精度モード',
+                      ),
+                      duration: const Duration(seconds: 2),
+                      backgroundColor: _useUwb ? Colors.cyan : Colors.grey[800],
+                    ),
+                  );
+                },
+                tooltip: 'UWB超高精度モード',
+              ),
+            // 表示モード切り替え（リスト ⇔ レーダー）
+            if (hasConnections)
+              IconButton(
+                icon: Icon(
+                  _isListMode ? Icons.radar : Icons.list,
+                  color: Colors.white,
+                ),
+                onPressed: () {
+                  setState(() {
+                    _isListMode = !_isListMode;
+                  });
+                },
+                tooltip: _isListMode ? 'レーダー表示' : 'リスト表示',
+              ),
+            // 精度モード切り替え（IMU/磁気）
           IconButton(
             icon: Icon(
               _useSensorFusion ? Icons.sports_score : Icons.compass_calibration,
@@ -371,9 +448,13 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
           // 探索状態と操作ボタン
           _buildSearchControl(isSearching),
           
-          // 接続済みバディ（レーダー表示）
+            // 接続済みバディ（リスト or レーダー表示）
           if (hasConnections)
-            Expanded(child: _buildRadarView()),
+              Expanded(
+                child: _isListMode
+                  ? _buildBuddyListView()
+                  : _buildRadarView(),
+              ),
           
           // 検出されたデバイス
           if (!hasConnections)
@@ -621,6 +702,314 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
           ),
           const SizedBox(height: 8),
           Expanded(
+    /// リストビュー（バディを分かりやすく表示）
+    Widget _buildBuddyListView() {
+      final buddies = _nearbyService.connectedBuddies;
+    
+      return Container(
+        margin: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  '接続中のバディ',
+                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                if (_uwbService.isSupported)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _useUwb ? Colors.cyan.withOpacity(0.2) : Colors.grey.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _useUwb ? Colors.cyan : Colors.grey,
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          Icons.radar,
+                          color: _useUwb ? Colors.cyan : Colors.grey,
+                          size: 14,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          _useUwb ? 'UWB超高精度' : 'UWB利用可',
+                          style: TextStyle(
+                            color: _useUwb ? Colors.cyan : Colors.grey,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            // センサー信頼度表示
+            if (_useSensorFusion)
+              Container(
+                padding: const EdgeInsets.all(8),
+                margin: const EdgeInsets.only(bottom: 8),
+                decoration: BoxDecoration(
+                  color: Colors.grey[900],
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.white12),
+                ),
+                child: _buildReliabilityMeter(),
+              ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: buddies.length,
+                itemBuilder: (context, index) {
+                  final buddy = buddies[index];
+                  return _buildBuddyListCard(buddy);
+                },
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    /// バディリストカード（分かりやすい表示）
+    Widget _buildBuddyListCard(Buddy buddy) {
+      // UWB測距結果を取得
+      final uwbResult = _uwbService.rangingResults[buddy.id];
+      final distance = _useUwb && uwbResult != null 
+        ? uwbResult.distanceMeters 
+        : buddy.distance;
+      final bearing = _useUwb && uwbResult != null && uwbResult.azimuthDegrees != null
+        ? uwbResult.azimuthDegrees!
+        : buddy.bearing;
+
+      final smoothedDistance = _smoothValue(_smoothedDistance, buddy.id, distance);
+      final smoothedBearing = _smoothValue(_smoothedBearing, buddy.id, bearing);
+    
+      // 距離に応じた色分け
+      Color primaryColor;
+      String distanceLabel;
+      IconData distanceIcon;
+    
+      if (distance == null) {
+        primaryColor = Colors.grey;
+        distanceLabel = '位置計算中...';
+        distanceIcon = Icons.location_searching;
+      } else if (distance < 5) {
+        primaryColor = Colors.green;
+        distanceLabel = 'すぐ近く！';
+        distanceIcon = Icons.person_pin_circle;
+      } else if (distance < 15) {
+        primaryColor = Colors.lightGreen;
+        distanceLabel = '近い';
+        distanceIcon = Icons.location_on;
+      } else if (distance < 30) {
+        primaryColor = Colors.orange;
+        distanceLabel = '中距離';
+        distanceIcon = Icons.my_location;
+      } else {
+        primaryColor = Colors.red;
+        distanceLabel = '遠い';
+        distanceIcon = Icons.location_off;
+      }
+    
+      return AnimatedContainer(
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut,
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: Colors.grey[900],
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: primaryColor.withOpacity(0.5), width: 2),
+          boxShadow: [
+            BoxShadow(
+              color: primaryColor.withOpacity(0.3),
+              blurRadius: 8,
+              spreadRadius: 1,
+            ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  // アバター
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: BoxDecoration(
+                      color: primaryColor.withOpacity(0.3),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: primaryColor, width: 2),
+                    ),
+                    child: Center(
+                      child: Text(
+                        buddy.name.isNotEmpty ? buddy.name[0].toUpperCase() : '?',
+                        style: TextStyle(
+                          color: primaryColor,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 24,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  // 名前と距離情報
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          buddy.name,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Icon(distanceIcon, color: primaryColor, size: 16),
+                            const SizedBox(width: 4),
+                            Text(
+                              distanceLabel,
+                              style: TextStyle(
+                                color: primaryColor,
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (smoothedDistance != null) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            _useUwb && uwbResult != null
+                              ? '${_formatDistance(smoothedDistance)} (UWB超高精度 ±${(uwbResult.distanceCm * 0.02).toStringAsFixed(1)}cm)'
+                              : '${_formatDistance(smoothedDistance, showAccuracy: true)}',
+                            style: TextStyle(
+                              color: Colors.grey[400],
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  // 方向矢印（大きく見やすく）
+                  if (smoothedBearing != null)
+                    Container(
+                      width: 64,
+                      height: 64,
+                      decoration: BoxDecoration(
+                        color: primaryColor.withOpacity(0.2),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Transform.rotate(
+                        angle: (smoothedBearing - _heading) * pi / 180,
+                        child: Icon(
+                          Icons.navigation,
+                          color: primaryColor,
+                          size: 40,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              // 詳細情報
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    // 方角
+                    Column(
+                      children: [
+                        const Icon(Icons.explore, color: Colors.white54, size: 20),
+                        const SizedBox(height: 4),
+                        Text(
+                          smoothedBearing != null ? _getDirectionText(smoothedBearing) : '---',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          smoothedBearing != null ? '${smoothedBearing.toStringAsFixed(0)}°' : '',
+                          style: const TextStyle(
+                            color: Colors.white54,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ],
+                    ),
+                    // 距離（大きく表示）
+                    Column(
+                      children: [
+                        const Icon(Icons.straighten, color: Colors.white54, size: 20),
+                        const SizedBox(height: 4),
+                        Text(
+                          _formatDistance(smoothedDistance),
+                          style: TextStyle(
+                            color: primaryColor,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
+                    ),
+                    // 速度（移動中の場合）
+                    if (buddy.speed != null && buddy.speed! > 0.5)
+                      Column(
+                        children: [
+                          const Icon(Icons.speed, color: Colors.white54, size: 20),
+                          const SizedBox(height: 4),
+                          Text(
+                            '${(buddy.speed! * 3.6).toStringAsFixed(0)} km/h',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const Text(
+                            '移動中',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 10,
+                            ),
+                          ),
+                        ],
+                      ),
+                    // 切断ボタン
+                    IconButton(
+                      icon: const Icon(Icons.link_off, color: Colors.red),
+                      onPressed: () => _nearbyService.disconnect(buddy.id),
+                      tooltip: '切断',
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
             child: LayoutBuilder(
               builder: (context, constraints) {
                 final size = min(constraints.maxWidth, constraints.maxHeight) - 32;
