@@ -1,7 +1,7 @@
 name: monoc_locsaver
 description: A monochrome location saver app.
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -30,6 +30,9 @@ dependencies:
   # Nearby Connections（迷子探し機能用 - Bluetooth + WiFi Direct）
   nearby_connections: ^4.0.1
   flutter_compass: ^0.8.0
+  
+  # 高精度センサー（IMUセンサーフュージョン、PDR用）
+  sensors_plus: ^4.0.0
 
   # 省電力バックグラウンド位置情報取得のためのパッケージ
   # 完全無料かつGitHub Actionsでビルドしやすい構成にするため、

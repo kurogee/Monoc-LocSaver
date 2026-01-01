@@ -11,6 +11,7 @@ import 'package:monoc_locsaver/services/transport_detector.dart';
 import 'package:monoc_locsaver/screens/diary_screen.dart';
 import 'package:monoc_locsaver/screens/photo_gallery_screen.dart';
 import 'package:monoc_locsaver/screens/finder_screen.dart';
+import 'package:monoc_locsaver/screens/stats_screen.dart';
 import 'package:intl/intl.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -568,6 +569,21 @@ class _HomeScreenState extends State<HomeScreen> {
       floatingActionButton: Column(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
+          // 統計・分析ボタン
+          FloatingActionButton.small(
+            heroTag: 'stats',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const StatsScreen()),
+              );
+            },
+            backgroundColor: Colors.purple[800],
+            foregroundColor: Colors.white,
+            tooltip: '統計・分析',
+            child: const Icon(Icons.bar_chart, size: 20),
+          ),
+          const SizedBox(height: 8),
           // バディを探すボタン
           FloatingActionButton.small(
             heroTag: 'finder',

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:monoc_locsaver/models/buddy.dart';
 import 'package:monoc_locsaver/services/nearby_service.dart';
+import 'package:monoc_locsaver/services/sensor_fusion_service.dart';
 
 /// 迷子探し画面 - バディの位置と方向を表示
 class FinderScreen extends StatefulWidget {
@@ -15,11 +16,23 @@ class FinderScreen extends StatefulWidget {
 
 class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMixin {
   final NearbyService _nearbyService = NearbyService();
+  final SensorFusionService _sensorFusion = SensorFusionService();
   
   // コンパスのヘディング（デバイスの向き）
   double _heading = 0;
   double _smoothHeading = 0; // 平滑化されたヘディング
   StreamSubscription<CompassEvent>? _compassSubscription;
+  bool _useSensorFusion = true; // センサーフュージョンを使用するか
+  
+  // カルマンフィルタ用パラメータ（より高精度な方位推定）
+  double _kalmanGain = 0.1;
+  double _estimateError = 1.0;
+  final double _measurementNoise = 4.0; // センサーノイズ
+  final double _processNoise = 0.01; // プロセスノイズ
+  
+  // メディアンフィルタ用（外れ値除去）
+  final List<double> _headingBuffer = [];
+  static const int _bufferSize = 5;
   
   // アニメーション
   late AnimationController _pulseController;
@@ -33,6 +46,7 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
     super.initState();
     _initializeService();
     _setupCompass();
+    _setupSensorFusion();
     _setupAnimation();
     _nameController.text = _nearbyService.myName;
   }
@@ -62,37 +76,80 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
     try {
       final compassStream = FlutterCompass.events;
       if (compassStream == null) {
-        debugPrint('コンパスが利用できません');
+        debugPrint('コンパスが利用できません - センサーフュージョンに切り替えます');
+        _useSensorFusion = true;
         return;
       }
       
-      _compassSubscription = compassStream.listen(
-        (event) {
-          if (mounted && event.heading != null) {
-            // コンパスの値を平滑化（急激な変化を抑える）
-            final newHeading = event.heading!;
-            
-            // 角度の差分を計算（360度を考慮）
-            var diff = newHeading - _smoothHeading;
-            if (diff > 180) diff -= 360;
-            if (diff < -180) diff += 360;
-            
-            // 指数移動平均で平滑化（アルファ値0.3で緩やかに追従）
-            _smoothHeading = (_smoothHeading + diff * 0.3) % 360;
-            if (_smoothHeading < 0) _smoothHeading += 360;
-            
-            setState(() {
-              _heading = _smoothHeading;
-            });
-          }
-        },
-        onError: (error) {
-          debugPrint('コンパスエラー: $error');
-        },
-        cancelOnError: false,
-      );
+      // センサーフュージョンを使用しない場合のみコンパスを使用
+      if (!_useSensorFusion) {
+        _compassSubscription = compassStream.listen(
+          (event) {
+            if (mounted && event.heading != null) {
+              double newHeading = event.heading!;
+              
+              // メディアンフィルタで外れ値を除去
+              _headingBuffer.add(newHeading);
+              if (_headingBuffer.length > _bufferSize) {
+                _headingBuffer.removeAt(0);
+              }
+              
+              if (_headingBuffer.length >= 3) {
+                // 中央値を取得（外れ値に強い）
+                final sorted = List<double>.from(_headingBuffer)..sort();
+                newHeading = sorted[sorted.length ~/ 2];
+              }
+              
+              // カルマンフィルタで高精度に推定（障害物やノイズに強い）
+              // 予測ステップ
+              _estimateError += _processNoise;
+              
+              // 更新ステップ
+              _kalmanGain = _estimateError / (_estimateError + _measurementNoise);
+              
+              // 角度の差分を計算（360度を考慮）
+              var diff = newHeading - _smoothHeading;
+              if (diff > 180) diff -= 360;
+              if (diff < -180) diff += 360;
+              
+              // カルマンフィルタで推定値を更新
+              _smoothHeading = (_smoothHeading + _kalmanGain * diff) % 360;
+              if (_smoothHeading < 0) _smoothHeading += 360;
+              
+              // 誤差を更新
+              _estimateError = (1 - _kalmanGain) * _estimateError;
+              
+              setState(() {
+                _heading = _smoothHeading;
+              });
+            }
+          },
+          onError: (error) {
+            debugPrint('コンパスエラー: $error');
+          },
+          cancelOnError: false,
+        );
+      }
     } catch (e) {
-      debugPrint('コンパス初期化エラー: $e');
+      debugPrint('コンパス初期化エラー: $e - センサーフュージョンに切り替えます');
+      _useSensorFusion = true;
+    }
+  }
+  
+  void _setupSensorFusion() {
+    try {
+      _sensorFusion.initialize();
+      _sensorFusion.addListener(() {
+        if (mounted && _useSensorFusion) {
+          setState(() {
+            _heading = _sensorFusion.heading;
+          });
+        }
+      });
+      debugPrint('高精度センサーフュージョンが有効化されました');
+    } catch (e) {
+      debugPrint('センサーフュージョン初期化エラー: $e');
+      _useSensorFusion = false;
     }
   }
 
@@ -116,6 +173,7 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
     _compassSubscription?.cancel();
     _pulseController.dispose();
     _nearbyService.removeListener(_onServiceUpdate);
+    _sensorFusion.removeListener(_onServiceUpdate);
     _nameController.dispose();
     super.dispose();
   }
@@ -215,13 +273,30 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
     );
   }
 
-  /// 距離を読みやすい形式に変換
-  String _formatDistance(double? meters) {
+  /// 距離を読みやすい形式に変換（精度を考慮）
+  String _formatDistance(double? meters, {bool showAccuracy = false}) {
     if (meters == null) return '---';
-    if (meters < 1) return '1m以内';
-    if (meters < 10) return '${meters.toStringAsFixed(1)}m'; // 10m以内は小数点表示
-    if (meters < 1000) return '${meters.round()}m';
-    return '${(meters / 1000).toStringAsFixed(1)}km';
+    
+    String baseDistance;
+    String accuracyNote = '';
+    
+    if (meters < 1) {
+      baseDistance = '1m以内';
+    } else if (meters < 10) {
+      baseDistance = '${meters.toStringAsFixed(1)}m';
+      if (showAccuracy) accuracyNote = ' (±2-5m)'; // 条件良好時
+    } else if (meters < 30) {
+      baseDistance = '${meters.round()}m';
+      if (showAccuracy) accuracyNote = ' (±5-15m)';
+    } else if (meters < 1000) {
+      baseDistance = '${meters.round()}m';
+      if (showAccuracy) accuracyNote = ' (推定)'; // 精度低下
+    } else {
+      baseDistance = '${(meters / 1000).toStringAsFixed(1)}km';
+      if (showAccuracy) accuracyNote = ' (推定)';
+    }
+    
+    return baseDistance + accuracyNote;
   }
 
   /// 方角を文字に変換
@@ -250,6 +325,29 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
           onPressed: () => Navigator.pop(context),
         ),
         actions: [
+          // 精度モード切り替え
+          IconButton(
+            icon: Icon(
+              _useSensorFusion ? Icons.sports_score : Icons.compass_calibration,
+              color: _useSensorFusion ? Colors.green : Colors.orange,
+            ),
+            onPressed: () {
+              setState(() {
+                _useSensorFusion = !_useSensorFusion;
+              });
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    _useSensorFusion 
+                      ? '高精度モード (IMUセンサーフュージョン)'
+                      : '通常モード (磁気センサー)',
+                  ),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            },
+            tooltip: '精度モード切り替え',
+          ),
           IconButton(
             icon: const Icon(Icons.person_outline, color: Colors.white),
             onPressed: _showNameDialog,
@@ -295,38 +393,139 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: Colors.white24),
       ),
-      child: Row(
+      child: Column(
         children: [
-          const CircleAvatar(
-            backgroundColor: Colors.white,
-            child: Icon(Icons.person, color: Colors.black),
+          Row(
+            children: [
+              const CircleAvatar(
+                backgroundColor: Colors.white,
+                child: Icon(Icons.person, color: Colors.black),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _nearbyService.myName,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    Text(
+                      'ID: ${_nearbyService.myId}',
+                      style: const TextStyle(color: Colors.grey, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.edit, color: Colors.white54),
+                onPressed: _showNameDialog,
+              ),
+            ],
           ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  _nearbyService.myName,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
+          // PDR情報表示
+          if (_useSensorFusion && _sensorFusion.stepCount > 0) ...[
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.green.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.green.withOpacity(0.3)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  Column(
+                    children: [
+                      const Icon(Icons.directions_walk, color: Colors.green, size: 16),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${_sensorFusion.stepCount}歩',
+                        style: const TextStyle(color: Colors.green, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ],
                   ),
-                ),
-                Text(
-                  'ID: ${_nearbyService.myId}',
-                  style: const TextStyle(color: Colors.grey, fontSize: 12),
-                ),
-              ],
+                  Column(
+                    children: [
+                      const Icon(Icons.explore, color: Colors.green, size: 16),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${_heading.toStringAsFixed(0)}°',
+                        style: const TextStyle(color: Colors.green, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                  Column(
+                    children: [
+                      const Icon(Icons.high_quality, color: Colors.green, size: 16),
+                      const SizedBox(height: 4),
+                      Text(
+                        _useSensorFusion ? 'IMU' : 'MAG',
+                        style: const TextStyle(color: Colors.green, fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.edit, color: Colors.white54),
-            onPressed: _showNameDialog,
-          ),
+          ],
         ],
       ),
+    );
+  }
+
+  /// センサー信頼度メーター
+  Widget _buildReliabilityMeter() {
+    final score = _sensorFusion.sensorReliabilityScore;
+    Color color;
+    String label;
+    
+    if (score >= 80) {
+      color = Colors.green;
+      label = '高精度';
+    } else if (score >= 60) {
+      color = Colors.lightGreen;
+      label = '良好';
+    } else if (score >= 40) {
+      color = Colors.orange;
+      label = '中程度';
+    } else {
+      color = Colors.red;
+      label = '低精度';
+    }
+    
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'センサー精度: $label',
+              style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              '${score.toStringAsFixed(0)}',
+              style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.bold),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: score / 100,
+            backgroundColor: Colors.grey[800],
+            valueColor: AlwaysStoppedAnimation<Color>(color),
+            minHeight: 4,
+          ),
+        ),
+      ],
     );
   }
 
@@ -464,21 +663,47 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
 
   /// バディマーカー
   Widget _buildBuddyMarker(Buddy buddy, double radarSize) {
-    if (buddy.bearing == null || buddy.distance == null) {
+    if (buddy.bearing == null) {
       return const SizedBox.shrink();
     }
 
     // デバイスの向きを考慮した相対角度
     final relativeAngle = (buddy.bearing! - _heading) * pi / 180;
     
+    // 距離が不明な場合は方位のみ表示
+    if (buddy.distance == null || buddy.distance! < 0) {
+      // 方位のみ（レーダー外周）
+      final radius = radarSize / 2 - 30;
+      final x = radius * sin(relativeAngle);
+      final y = -radius * cos(relativeAngle);
+      
+      return Transform.translate(
+        offset: Offset(x, y),
+        child: Icon(
+          Icons.question_mark,
+          color: Colors.grey,
+          size: 20,
+        ),
+      );
+    }
+    
     // 距離に基づいて表示スケールを調整（近いほど大きく表示）
     double maxDistance = 50.0; // デフォルト50m
+    Widget markerWidget;
+    
+    // 距離帯別UI切替
     if (buddy.distance! < 10) {
-      maxDistance = 10.0; // 10m以内なら細かく表示
+      // 0-10m: 点＋矢印（高精度）
+      maxDistance = 10.0;
+      markerWidget = _buildCloseRangeMarker(buddy);
     } else if (buddy.distance! < 30) {
-      maxDistance = 30.0; // 30m以内なら中間
-    } else if (buddy.distance! > 100) {
-      maxDistance = 200.0; // 100m以上なら広範囲表示
+      // 10-30m: 扇形（中精度）
+      maxDistance = 30.0;
+      markerWidget = _buildMidRangeMarker(buddy);
+    } else {
+      // 30m+: 方位のみ（低精度）
+      maxDistance = 100.0;
+      markerWidget = _buildFarRangeMarker(buddy);
     }
     
     final normalizedDistance = min(buddy.distance! / maxDistance, 1.0);
@@ -492,12 +717,137 @@ class _FinderScreenState extends State<FinderScreen> with TickerProviderStateMix
       builder: (context, child) {
         return Transform.translate(
           offset: Offset(x, y),
+          child: markerWidget,
+        );
+      },
+    );
+  }
+  
+  /// 近距離マーカー（0-10m）
+  Widget _buildCloseRangeMarker(Buddy buddy) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Transform.scale(
+          scale: _pulseAnimation.value * 0.85,
+          child: Container(
+            width: 50,
+            height: 50,
+            decoration: BoxDecoration(
+              color: Colors.blue.withOpacity(0.9),
+              shape: BoxShape.circle,
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.blue.withOpacity(0.6),
+                  blurRadius: 15,
+                  spreadRadius: 3,
+                ),
+              ],
+            ),
+            child: Center(
+              child: Text(
+                buddy.name.isNotEmpty ? buddy.name[0].toUpperCase() : '?',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 20,
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: Colors.black.withOpacity(0.8),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.blue, width: 1),
+          ),
           child: Column(
-            mainAxisSize: MainAxisSize.min,
             children: [
-              // アイコン
-              Transform.scale(
-                scale: _pulseAnimation.value * 0.85, // パルスを控えめに
+              Text(
+                buddy.name,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+              Text(
+                _formatDistance(buddy.distance),
+                style: const TextStyle(
+                  color: Colors.blue,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+  
+  /// 中距離マーカー（10-30m）
+  Widget _buildMidRangeMarker(Buddy buddy) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: Colors.orange.withOpacity(0.7),
+            shape: BoxShape.circle,
+            border: Border.all(color: Colors.white, width: 2),
+          ),
+          child: Center(
+            child: Text(
+              buddy.name.isNotEmpty ? buddy.name[0].toUpperCase() : '?',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          _formatDistance(buddy.distance),
+          style: const TextStyle(
+            color: Colors.orange,
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ],
+    );
+  }
+  
+  /// 遠距離マーカー（30m+）
+  Widget _buildFarRangeMarker(Buddy buddy) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(
+          Icons.circle,
+          color: Colors.grey.withOpacity(0.5),
+          size: 24,
+        ),
+        Text(
+          _formatDistance(buddy.distance),
+          style: TextStyle(
+            color: Colors.grey[600],
+            fontSize: 9,
+          ),
+        ),
+      ],
+    );
+  }
                 child: Container(
                   width: 50,
                   height: 50,

@@ -100,6 +100,20 @@ CREATE TABLE locations (
     return result.map((json) => LocationRecord.fromMap(json)).toList();
   }
 
+  Future<List<LocationRecord>> readLocationsByDateRange(DateTime startDate, DateTime endDate) async {
+    final db = await instance.database;
+    final start = startDate.toIso8601String();
+    final end = endDate.toIso8601String();
+    
+    final result = await db.query(
+      'locations',
+      where: 'timestamp BETWEEN ? AND ?',
+      whereArgs: [start, end],
+      orderBy: 'timestamp ASC',
+    );
+    return result.map((json) => LocationRecord.fromMap(json)).toList();
+  }
+
   Future<LocationRecord?> getLastRecord() async {
     final db = await instance.database;
     final result = await db.query(

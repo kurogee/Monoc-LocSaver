@@ -7,8 +7,12 @@ class Buddy {
   double? longitude;
   double? accuracy;
   DateTime? lastUpdate;
+  DateTime? lastUpdateTime; // 位置更新時刻（フィルタリング用）
   double? distance; // メートル単位
   double? bearing; // 度数（北を0度として時計回り）
+  double? speed; // 移動速度（m/s）
+  double? movementHeading; // 移動方向（度）
+  List<double> rssiHistory = []; // RSSI履歴（距離推定補正用）
   bool isConnected;
 
   Buddy({
@@ -21,6 +25,8 @@ class Buddy {
     this.lastUpdate,
     this.distance,
     this.bearing,
+    this.speed,
+    this.movementHeading,
     this.isConnected = false,
   });
 

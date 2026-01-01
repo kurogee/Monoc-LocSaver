@@ -376,51 +376,145 @@ class NearbyService extends ChangeNotifier {
       final newLng = data['longitude']?.toDouble() ?? 0;
       final accuracy = data['accuracy']?.toDouble();
       
-      // 精度が低すぎる場合は無視（50m以上の誤差）
-      if (accuracy != null && accuracy > 50) {
-        debugPrint('精度が低すぎるため更新をスキップ: ${accuracy}m');
-        return;
-      }
-      
-      // 前回の位置から大きく離れすぎている場合は無視（1秒で100m以上）
-      if (buddy.latitude != null && buddy.longitude != null) {
-        final distance = _calculateDistance(
-          buddy.latitude!,
-          buddy.longitude!,
-          newLat,
-          newLng,
-        );
-        if (distance > 100) {
-          debugPrint('位置の変化が大きすぎるため更新をスキップ: ${distance.toStringAsFixed(1)}m');
+      // 精度によるフィルタリング（段階的）
+      if (accuracy != null) {
+        // 非常に精度が低い場合は無視（100m以上の誤差）
+        if (accuracy > 100) {
+          debugPrint('精度が非常に低いため更新をスキップ: ${accuracy}m');
           return;
         }
+        // 精度がやや低い場合（50-100m）は前回の位置と加重平均
+        if (accuracy > 50 && buddy.latitude != null && buddy.longitude != null) {
+          // 前回の位置と新しい位置を加重平均（精度が低いほど影響小）
+          final weight = 1.0 / accuracy; // 精度が低いほどウェイト小
+          final prevWeight = 1.0 / (buddy.accuracy ?? 50);
+          final totalWeight = weight + prevWeight;
+          
+          final avgLat = (newLat * weight + buddy.latitude! * prevWeight) / totalWeight;
+          final avgLng = (newLng * weight + buddy.longitude! * prevWeight) / totalWeight;
+          
+          buddy.updateLocation(
+            lat: avgLat,
+            lng: avgLng,
+            acc: (accuracy + (buddy.accuracy ?? 50)) / 2,
+          );
+          debugPrint('精度がやや低いため加重平均を適用: ${accuracy}m');
+        } else {
+          // 精度が高い場合はそのまま使用
+          buddy.updateLocation(
+            lat: newLat,
+            lng: newLng,
+            acc: accuracy,
+          );
+        }
+      } else {
+        buddy.updateLocation(
+          lat: newLat,
+          lng: newLng,
+          acc: null,
+        );
       }
       
-      buddy.updateLocation(
-        lat: newLat,
-        lng: newLng,
-        acc: accuracy,
-      );
+      // 前回の位置から大きく離れすぎている場合は無視（3秒で200m以上）
+      // （障害物によるGPSのマルチパスエラーを防ぐ）
+      if (buddy.lastUpdateTime != null) {
+        final timeDiff = DateTime.now().difference(buddy.lastUpdateTime!).inSeconds;
+        if (timeDiff > 0 && buddy.distance != null) {
+          final oldLat = buddy.latitude;
+          final oldLng = buddy.longitude;
+          
+          if (oldLat != null && oldLng != null) {
+            final jumpDistance = _calculateDistance(oldLat, oldLng, newLat, newLng);
+            final maxReasonableSpeed = 200.0 / 3.0; // 3秒で200m = 67m/s 約240km/h
+            
+            if (jumpDistance / timeDiff > maxReasonableSpeed) {
+              debugPrint('位置の変化が大きすぎるため更新をスキップ: ${jumpDistance.toStringAsFixed(1)}m / ${timeDiff}s');
+              return;
+            }
+          }
+        }
+      }
+      buddy.lastUpdateTime = DateTime.now();
       
       // 名前の更新
       if (data['name'] != null) {
         buddy.name = data['name'];
       }
       
+      // 速度と方向の更新
+      if (data['speed'] != null) {
+        buddy.speed = data['speed'].toDouble();
+      }
+      if (data['heading'] != null) {
+        buddy.movementHeading = data['heading'].toDouble();
+      }
+      
       // 距離と方角を計算
       if (_currentPosition != null && buddy.latitude != null && buddy.longitude != null) {
-        buddy.distance = _calculateDistance(
+        final newDistance = _calculateDistance(
           _currentPosition!.latitude,
           _currentPosition!.longitude,
           buddy.latitude!,
           buddy.longitude!,
         );
-        buddy.bearing = _calculateBearing(
-          _currentPosition!.latitude,
-          _currentPosition!.longitude,
-          buddy.latitude!,
-          buddy.longitude!,
-        );
+        
+        // 移動速度を考慮した予測距離（次の更新までの推定位置）
+        if (buddy.speed != null && buddy.movementHeading != null && buddy.speed! > 0.5) {
+          // 3秒後の予測位置を計算
+          const predictionTime = 3.0; // 秒
+          final predictedDistance = buddy.speed! * predictionTime;
+          final radHeading = buddy.movementHeading! * pi / 180;
+          
+          // 移動方向の変化率を計算（前回との差分）
+          double angularVelocity = 0.0;
+          if (buddy.movementHeading != null && buddy.lastUpdateTime != null) {
+            final timeDiff = DateTime.now().difference(buddy.lastUpdateTime!).inMilliseconds / 1000.0;
+            if (timeDiff > 0 && timeDiff < 5) {
+              // 前回の方向が記録されていれば角速度を計算
+              // （簡略化のため、ここではスキップ）
+            }
+          }
+          
+          // 角速度が大きい（方向転換中）は予測を下げる
+          double predictionWeight = min(buddy.speed! / 5.0, 0.5); // 最大50%まで予測を使用
+          if (angularVelocity.abs() > 30) { // 30度/秒以上の回転
+            predictionWeight *= 0.3; // 予測ウェイトを下げる
+          }
+          
+          // 予測位置への移動量
+          final deltaLat = predictedDistance * cos(radHeading) / 111320; // 緯度1度≈111.32km
+          final deltaLng = predictedDistance * sin(radHeading) / (111320 * cos(buddy.latitude! * pi / 180));
+          
+          final predictedLat = buddy.latitude! + deltaLat;
+          final predictedLng = buddy.longitude! + deltaLng;
+          
+          // 予測位置までの距離と方角
+          final predictedDist = _calculateDistance(
+            _currentPosition!.latitude,
+            _currentPosition!.longitude,
+            predictedLat,
+            predictedLng,
+          );
+          
+          // 現在と予測の加重平均
+          buddy.distance = newDistance * (1 - predictionWeight) + predictedDist * predictionWeight;
+          
+          buddy.bearing = _calculateBearing(
+            _currentPosition!.latitude,
+            _currentPosition!.longitude,
+            predictedLat * predictionWeight + buddy.latitude! * (1 - predictionWeight),
+            predictedLng * predictionWeight + buddy.longitude! * (1 - predictionWeight),
+          );
+        } else {
+          // 静止または低速の場合は通常の計算
+          buddy.distance = newDistance;
+          buddy.bearing = _calculateBearing(
+            _currentPosition!.latitude,
+            _currentPosition!.longitude,
+            buddy.latitude!,
+            buddy.longitude!,
+          );
+        }
       }
       
       notifyListeners();
@@ -460,9 +554,9 @@ class NearbyService extends ChangeNotifier {
         return;
       }
       
-      // 高精度で位置情報を取得
+      // 高精度で位置情報を取得（bestAccuracyで最高精度）
       final newPosition = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.best,
+        desiredAccuracy: LocationAccuracy.bestForNavigation, // ナビゲーション用最高精度
         timeLimit: const Duration(seconds: 5),
       ).timeout(
         const Duration(seconds: 7),
@@ -471,21 +565,38 @@ class NearbyService extends ChangeNotifier {
         },
       );
       
-      // 位置履歴に追加して平滑化
+      // 位置履歴に追加して平滑化（ノイズ削減）
       _positionHistory.add(newPosition);
       if (_positionHistory.length > _maxHistorySize) {
         _positionHistory.removeAt(0);
       }
       
-      // 平均位置を計算（ノイズ削減）
-      double avgLat = _positionHistory.map((p) => p.latitude).reduce((a, b) => a + b) / _positionHistory.length;
-      double avgLng = _positionHistory.map((p) => p.longitude).reduce((a, b) => a + b) / _positionHistory.length;
+      // 精度を考慮した加重平均位置を計算（精度が高いほどウェイト大）
+      double totalWeight = 0;
+      double weightedLat = 0;
+      double weightedLng = 0;
+      double bestAccuracy = double.infinity;
+      
+      for (var pos in _positionHistory) {
+        // 精度をウェイトとして使用（精度が高い＝値が小さいほどウェイト大）
+        final weight = 1.0 / (pos.accuracy + 1.0); // +1でゼロ除算回避
+        weightedLat += pos.latitude * weight;
+        weightedLng += pos.longitude * weight;
+        totalWeight += weight;
+        if (pos.accuracy < bestAccuracy) {
+          bestAccuracy = pos.accuracy;
+        }
+      }
+      
+      final avgLat = weightedLat / totalWeight;
+      final avgLng = weightedLng / totalWeight;
+      final avgAccuracy = bestAccuracy; // 最高精度を使用
       
       _currentPosition = Position(
         latitude: avgLat,
         longitude: avgLng,
         timestamp: newPosition.timestamp,
-        accuracy: newPosition.accuracy,
+        accuracy: avgAccuracy,
         altitude: newPosition.altitude,
         altitudeAccuracy: newPosition.altitudeAccuracy,
         heading: newPosition.heading,
@@ -504,6 +615,8 @@ class NearbyService extends ChangeNotifier {
         'longitude': _currentPosition!.longitude,
         'accuracy': _currentPosition!.accuracy,
         'timestamp': DateTime.now().toIso8601String(),
+        'heading': _currentPosition!.heading, // 移動方向
+        'speed': _currentPosition!.speed, // 移動速度
       };
       
       final bytes = utf8.encode(jsonEncode(payload));
@@ -583,6 +696,33 @@ class NearbyService extends ChangeNotifier {
 
   double _toRadians(double degrees) => degrees * pi / 180;
   double _toDegrees(double radians) => radians * 180 / pi;
+
+  /// RSSIから距離を推定（フォールバック用）
+  /// Path Loss Model: d = 10^((TxPower - RSSI) / (10 * n))
+  /// n = 環境係数（屋外:2-3, 屋内:3-4）
+  double _estimateDistanceFromRSSI(int rssi, {double txPower = -59, double environmentFactor = 3.0}) {
+    if (rssi == 0) return -1.0; // 無効なRSSI
+    
+    // 距離計算
+    final ratio = (txPower - rssi) / (10 * environmentFactor);
+    final distance = pow(10, ratio).toDouble();
+    
+    // 非現実的な値をフィルタリング（1m未満または100m以上）
+    if (distance < 1.0) return 1.0;
+    if (distance > 100.0) return 100.0;
+    
+    return distance;
+  }
+  
+  /// 距離をマルチパスフェーディングを考慮して補正
+  /// 複数のRSSI測定値の中央値を使用（外れ値に強い）
+  double _filterRSSIDistance(List<double> distances) {
+    if (distances.isEmpty) return -1.0;
+    if (distances.length == 1) return distances[0];
+    
+    final sorted = List<double>.from(distances)..sort();
+    return sorted[sorted.length ~/ 2]; // 中央値
+  }
 
   /// 接続を切断
   Future<void> disconnect(String endpointId) async {
